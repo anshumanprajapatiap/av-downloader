@@ -15,7 +15,7 @@ from typing import Generator
 import json
 import threading, queue
 from utils import sanitize_filename, sanitize_playlist_filename
-
+import requests
 import concurrent.futures
 import shutil
 
@@ -57,6 +57,54 @@ def get_download_path(path: str = None) -> str:
         return os.path.join(BASE_DOWNLOAD_DIR, path)
     return os.path.abspath(path)
 
+
+def stream_youtube_video(url: str, format_id: str = None):
+    """
+    Use yt-dlp to get a direct media URL and stream it to client without saving to disk.
+    """
+    logger.info(f"🎬 [STREAM INIT] Request received | URL: {url} | format_id: {format_id}")
+
+    ydl_opts = {
+        "quiet": True,
+        "skip_download": True,
+        "noplaylist": True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        title = info.get("title", "Unknown Title")
+        total_formats = len(info.get("formats", []))
+        logger.info(f"📄 [STREAM INFO] Extracted metadata | Title: '{title}' | Formats: {total_formats}")
+
+        fmt = None
+        if format_id:
+            fmt = next((f for f in info["formats"] if f.get("format_id") == format_id), None)
+            if fmt:
+                logger.info(f"🎯 [FORMAT SELECTED] Found format_id: {format_id} | "
+                            f"Resolution: {fmt.get('height')}p | Codec: {fmt.get('vcodec')}/{fmt.get('acodec')}")
+            else:
+                logger.warning(f"⚠️ [FORMAT MISSING] Requested format_id '{format_id}' not found — falling back to best available format.")
+        else:
+            logger.info("ℹ️ [FORMAT SELECTED] No format_id provided — using best available format.")
+
+        if not fmt:
+            fmt = info["formats"][-1]  # fallback
+            logger.info(f"🎬 [FORMAT FALLBACK] Using format_id: {fmt.get('format_id')} | "
+                        f"Resolution: {fmt.get('height')}p | Codec: {fmt.get('vcodec')}/{fmt.get('acodec')}")
+
+        stream_url = fmt["url"]
+        mime_type = fmt.get("ext", "mp4")
+        sanitized_title = sanitize_filename(title)
+
+        logger.info(f"✅ [STREAM READY] {sanitized_title}.{mime_type} | Direct stream URL prepared")
+
+        return stream_url, mime_type, sanitized_title
+
+    except Exception as e:
+        logger.exception(f"❌ [STREAM ERROR] Failed to prepare stream for URL: {url} | {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to prepare stream: {str(e)}")
 
 
 
@@ -198,7 +246,61 @@ def preview_video(url: str):
         logger.error(f"❌ [PREVIEW] Error processing {url} | {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch video info: {str(e)}")
 
+
+
 def download_video(req: DownloadRequest):
+    logger.info(f"🎬 Streaming directly | mode={req.mode} | url={req.url}")
+
+    try:
+        # Step 1️⃣ — Get streamable media URL
+        stream_url, mime_type, title = stream_youtube_video(
+            req.url,
+            req.video_id or req.format_id
+        )
+        logger.info(f"🔗 Direct stream URL resolved | {stream_url[:80]}...")
+
+        # Step 2️⃣ — Prepare stream headers (mimic browser)
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/115.0.0.0 Safari/537.36"
+            ),
+            "Accept-Encoding": "identity;q=1, *;q=0",
+            "Connection": "keep-alive",
+            "Range": "bytes=0-",
+        }
+
+        # Step 3️⃣ — Stream content
+        def iter_content():
+            logger.info("📡 [STREAMING] Starting content transfer...")
+            with requests.get(stream_url, headers=headers, stream=True, timeout=30) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        yield chunk
+            logger.info("✅ [STREAMING] Completed sending stream to client.")
+
+        ext = "mp3" if req.mode == "audio" else "mp4"
+        filename = f"{title}.{ext}"
+        content_type = "audio/mpeg" if req.mode == "audio" else "video/mp4"
+
+        return StreamingResponse(
+            iter_content(),
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            },
+        )
+
+    except Exception as e:
+        logger.exception(f"❌ Streaming failed for {req.url}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+'''
+def download_video_save_to_server_then_stream_to_client(req: DownloadRequest):
     logger.info(f"🎬 Downloading video | mode={req.mode} | url={req.url}")
 
     try:
@@ -319,6 +421,7 @@ def download_video(req: DownloadRequest):
     finally:
         logger.info(f"🧹 Temp directory used: {tmp_dir}")
 
+'''
 
 def download_playlist(req: PlaylistDownloadRequest):
     """
