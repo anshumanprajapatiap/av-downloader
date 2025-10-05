@@ -1,5 +1,6 @@
 # Logs
 logs
+downloads
 *.log
 __pycache__
 

@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Query, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+import uuid
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import yt_dlp
@@ -7,13 +8,16 @@ import os
 import subprocess
 import logging
 from datetime import datetime
-from model.download_request import DownloadRequest
+from model.download_request import DownloadRequest, PlaylistDownloadRequest
 import tempfile
 from utils import sanitize_filename
+from typing import Generator
+import json
+import threading, queue
+from utils import sanitize_filename, sanitize_playlist_filename
 
-# Ensure download directory exists
-DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+import concurrent.futures
+import shutil
 
 
 
@@ -33,9 +37,84 @@ logging.basicConfig(
     ],
 )
 
-logger = logging.getLogger("downloader")
+logger = logging.getLogger(__name__)
 
 
+
+# Base download directory (e.g., /app/downloads inside container)
+BASE_DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
+os.makedirs(BASE_DOWNLOAD_DIR, exist_ok=True)
+
+
+def get_download_path(path: str = None) -> str:
+    """
+    Resolve and return a safe, absolute download path.
+    Defaults to BASE_DOWNLOAD_DIR if not specified or invalid.
+    """
+    if not path or path == "Downloads":
+        return BASE_DOWNLOAD_DIR
+    if not os.path.isabs(path):
+        return os.path.join(BASE_DOWNLOAD_DIR, path)
+    return os.path.abspath(path)
+
+
+
+
+def preview_playlist(url: str):
+    logger.info(f"📋 [PLAYLIST PREVIEW] Request received | URL: {url}")
+
+    ydl_opts = {
+        "quiet": True,
+        "skip_download": True,
+        "dump_single_json": True,
+        "extract_flat": True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        if "entries" not in info:
+            raise HTTPException(status_code=400, detail="URL is not a playlist")
+
+        playlist_title = info.get("title")
+        entries = info.get("entries", [])
+
+        videos = []
+        for i, entry in enumerate(entries):
+            thumbnails = entry.get("thumbnails", [])
+            
+            # Pick a safe thumbnail index
+            thumb_url = None
+            if thumbnails:
+                if len(thumbnails) > i + 1:
+                    thumb_url = thumbnails[i + 1]["url"]
+                else:
+                    thumb_url = thumbnails[-1]["url"]  # fallback to last available thumbnail
+
+            entry["thumbnail"] = thumb_url
+
+            videos.append({
+                "id": entry.get("id"),
+                "title": entry.get("title"),
+                "url": entry.get("url"),
+                "duration": entry.get("duration"),
+                "webpage_url": entry.get("webpage_url"),
+                "thumbnail": entry.get("thumbnail"),
+            })
+
+        logger.info(f"✅ [PLAYLIST PREVIEW] Found {len(videos)} videos in playlist '{playlist_title}'")
+
+        return {
+            "type": "playlist",
+            "playlist_title": playlist_title,
+            "thumbnail": info.get("thumbnails")[0]["url"] if info.get("thumbnails") else None,
+            "videos": videos,
+        }
+
+    except Exception as e:
+        logger.error(f"❌ [PLAYLIST PREVIEW] Error processing {url} | {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch playlist info: {str(e)}")
 
 
 # 🎥 Preview available formats (for UI)
@@ -106,6 +185,7 @@ def preview_video(url: str):
         )
 
         return {
+            "type": "single",
             "title": title,
             "thumbnail": info.get("thumbnail"),
             "duration": info.get("duration"),
@@ -118,68 +198,24 @@ def preview_video(url: str):
         logger.error(f"❌ [PREVIEW] Error processing {url} | {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch video info: {str(e)}")
 
-
-
-# def download_video(req: DownloadRequest):
-#     logger.info(f"🎬 Download request: {req.mode} | URL: {req.url}")
-
-#     try:
-#         if req.mode == "video":
-#             ydl_opts = {
-#                 "format": req.video_id or req.format_id,
-#                 "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
-#             }
-
-#         elif req.mode == "audio":
-#             ydl_opts = {
-#                 "format": req.audio_id or req.format_id,
-#                 "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
-#                 "postprocessors": [
-#                     {
-#                         "key": "FFmpegExtractAudio",
-#                         "preferredcodec": "mp3",
-#                         "preferredquality": "192",
-#                     }
-#                 ],
-#             }
-
-#         elif req.mode == "merged":
-#             if not (req.video_id and req.audio_id):
-#                 raise HTTPException(status_code=400, detail="Missing video_id or audio_id")
-#             ydl_opts = {
-#                 "format": f"{req.video_id}+{req.audio_id}",
-#                 "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
-#                 "merge_output_format": "mp4",
-#             }
-
-#         else:
-#             raise HTTPException(status_code=400, detail="Invalid mode. Must be video, audio, or merged.")
-
-#         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-#             ydl.download([req.url])
-
-#         logger.info(f"✅ Download complete: {req.url}")
-#         return {"status": "success"}
-
-#     except Exception as e:
-#         logger.error(f"❌ Download failed for {req.url} — {type(e).__name__}: {e}")
-#         raise HTTPException(status_code=500, detail=str(e))
-
-
-
 def download_video(req: DownloadRequest):
-    logger.info(f"🎬 Processing mode={req.mode} | URL={req.url}")
-
-    tmp_dir = tempfile.mkdtemp()
-    output_path = os.path.join(tmp_dir, "%(title)s.%(ext)s")
+    logger.info(f"🎬 Downloading video | mode={req.mode} | url={req.url}")
 
     try:
-        # 🎯 Prepare yt-dlp options
+        # ✅ Step 1️⃣ Resolve download and temp directories
+        download_dir = get_download_path(req.download_path)
+        os.makedirs(download_dir, exist_ok=True)
+        tmp_dir = tempfile.mkdtemp(dir=download_dir)  # ✅ temp folder INSIDE downloads
+        output_path = os.path.join(tmp_dir, "%(title)s.%(ext)s")
+
+        # ✅ Step 2️⃣ Prepare yt-dlp options based on mode
         if req.mode == "video":
             ydl_opts = {
-                "format": req.video_id or req.format_id or "bestvideo",
+                "format": req.video_id or req.format_id or "bestvideo+bestaudio/best",
                 "outtmpl": output_path,
                 "restrictfilenames": True,
+                "merge_output_format": "mp4",
+                "noplaylist": True,
             }
 
         elif req.mode == "audio":
@@ -194,7 +230,8 @@ def download_video(req: DownloadRequest):
                         "preferredquality": "192",
                     }
                 ],
-                "keepvideo": False,  # 🧹 deletes .webm after conversion
+                "keepvideo": False,
+                "noplaylist": True,
             }
 
         elif req.mode == "merged":
@@ -206,17 +243,20 @@ def download_video(req: DownloadRequest):
                 "outtmpl": output_path,
                 "restrictfilenames": True,
                 "merge_output_format": "mp4",
+                "noplaylist": True,
             }
 
         else:
             raise HTTPException(status_code=400, detail="Invalid mode")
 
-        # 🚀 Perform the download
+        logger.info(f"🔧 yt-dlp options: {ydl_opts}")
+
+        # ✅ Step 3️⃣ Download file
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(req.url, download=True)
             raw_path = ydl.prepare_filename(info)
 
-        # 🧠 Handle audio-only renamed file
+        # ✅ Step 4️⃣ Handle renamed audio
         if req.mode == "audio":
             base, _ = os.path.splitext(raw_path)
             audio_path = base + ".mp3"
@@ -225,11 +265,34 @@ def download_video(req: DownloadRequest):
             final_path = raw_path
 
         if not os.path.exists(final_path):
-            raise HTTPException(status_code=500, detail=f"File not found after download: {final_path}")
+            raise HTTPException(status_code=500, detail=f"File not found: {final_path}")
 
-        logger.info(f"✅ File ready: {final_path}")
+        # ✅ Step 5️⃣ Trim only if needed
+        if (req.start_time and req.start_time != "00:00:00") or req.end_time:
+            logger.info(f"✂️ Trimming from {req.start_time} to {req.end_time}")
+            trimmed_path = os.path.join(tmp_dir, f"trimmed_{os.path.basename(final_path)}")
 
-        # 🧩 Prepare stream
+            start_arg = ["-ss", req.start_time] if req.start_time else []
+            end_arg = ["-to", req.end_time] if req.end_time else []
+
+            cmd = [
+                "ffmpeg",
+                *start_arg,
+                *end_arg,
+                "-i", final_path,
+                "-c", "copy",
+                "-avoid_negative_ts", "1",
+                trimmed_path,
+                "-y"
+            ]
+
+            subprocess.run(cmd, check=True)
+            final_path = trimmed_path
+            logger.info(f"✅ Trimmed segment ready: {final_path}")
+        else:
+            logger.info("📽️ Full video/audio selected — no trimming applied.")
+
+        # ✅ Step 6️⃣ Stream final file to client
         def iterfile():
             with open(final_path, "rb") as f:
                 while chunk := f.read(1024 * 1024):
@@ -238,7 +301,8 @@ def download_video(req: DownloadRequest):
         filename = os.path.basename(final_path)
         filesize = os.path.getsize(final_path)
 
-        # 🧾 Response
+        logger.info(f"✅ Download ready to stream: {filename} ({filesize} bytes)")
+
         return StreamingResponse(
             iterfile(),
             media_type="audio/mpeg" if req.mode == "audio" else "video/mp4",
@@ -249,9 +313,140 @@ def download_video(req: DownloadRequest):
         )
 
     except Exception as e:
-        logger.error(f"❌ Download failed for {req.url}: {e}")
+        logger.exception(f"❌ Download failed for {req.url}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
     finally:
-        logger.info(f"🧹 Temp directory: {tmp_dir}")
+        logger.info(f"🧹 Temp directory used: {tmp_dir}")
 
+
+def download_playlist(req: PlaylistDownloadRequest):
+    """
+    Downloads multiple videos in parallel with per-video progress updates via SSE.
+    """
+    playlist_title = req.playlist_title or "playlist"
+    zip_base = sanitize_filename(playlist_title)
+    if not zip_base.endswith(".zip"):
+        zip_base += ".zip"
+
+    download_dir = get_download_path(req.download_path)
+    os.makedirs(download_dir, exist_ok=True)
+
+    tmp_dir = tempfile.mkdtemp(dir=download_dir)
+    logger.info(f"📂 Using temp dir: {tmp_dir}")
+
+    q = queue.Queue()
+
+    def emit(event_type: str, **kwargs):
+        """Push structured JSON events into the SSE queue."""
+        q.put(json.dumps({"event": event_type, **kwargs}))
+
+    def download_single_video(video_url, index):
+        """
+        Downloads a single video while emitting progress events.
+        """
+        try:
+            video_name = f"video_{index+1}"
+            emit("status", message=f"🎬 Starting download for video #{index + 1}")
+
+            def progress_hook(d):
+                if d["status"] == "downloading":
+                    emit(
+                        "progress",
+                        video_index=index,
+                        filename=os.path.basename(d.get("filename", "")),
+                        percent=d.get("_percent_str", "").strip(),
+                        speed=d.get("_speed_str", "").strip(),
+                        eta=d.get("_eta_str", "").strip(),
+                    )
+                elif d["status"] == "finished":
+                    emit(
+                        "video_finished",
+                        video_index=index,
+                        filename=os.path.basename(d.get("filename", "")),
+                        message="✅ Finished downloading this video.",
+                    )
+
+            class QueueLogger:
+                def debug(self, msg):
+                    msg = msg.strip()
+                    if any(k in msg for k in ["[download]", "[Merger]", "[ExtractAudio]"]):
+                        emit("log", level="info", message=f"[{video_name}] {msg}")
+
+                def warning(self, msg):
+                    emit("log", level="warning", message=f"[{video_name}] ⚠️ {msg.strip()}")
+
+                def error(self, msg):
+                    emit("log", level="error", message=f"[{video_name}] ❌ {msg.strip()}")
+
+            ydl_opts = {
+                "outtmpl": os.path.join(tmp_dir, f"{index+1} - %(title)s.%(ext)s"),
+                "format": "bestvideo+bestaudio/best",
+                "merge_output_format": "mp4",
+                "progress_hooks": [progress_hook],
+                "logger": QueueLogger(),
+                "noplaylist": True,
+                "quiet": True,
+                "ignoreerrors": True,
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([video_url])
+
+            return True
+
+        except Exception as e:
+            emit("error", message=f"❌ Video #{index + 1} failed: {str(e)}")
+            return False
+
+    def run_downloader():
+        try:
+            total = len(req.video_ids)
+            emit("status", message=f"🚀 Starting playlist download ({total} videos)...")
+
+            # 🧵 Parallel download
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [
+                    executor.submit(
+                        download_single_video,
+                        f"https://www.youtube.com/watch?v={vid_id}",
+                        idx,
+                    )
+                    for idx, vid_id in enumerate(req.video_ids)
+                ]
+
+                completed = 0
+                for future in concurrent.futures.as_completed(futures):
+                    _ = future.result()
+                    completed += 1
+                    emit("status", message=f"✅ {completed}/{total} videos completed")
+
+            # 📦 Create ZIP archive
+            emit("status", message="📦 Creating ZIP archive...")
+            zip_path = os.path.join(download_dir, zip_base)
+            shutil.make_archive(zip_path[:-4], "zip", tmp_dir)
+
+            emit(
+                "completed",
+                message="✅ Playlist download finished!",
+                zip_url=f"/download/{zip_base}",
+            )
+
+        except Exception as e:
+            logger.exception("Playlist download failed")
+            emit("error", message=f"❌ {e}")
+        finally:
+            q.put("__done__")
+
+    # 🔄 Start background thread
+    threading.Thread(target=run_downloader, daemon=True).start()
+
+    def event_stream():
+        """Stream JSON messages to client via SSE."""
+        while True:
+            msg = q.get()
+            if msg == "__done__":
+                break
+            yield f"data: {msg}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
