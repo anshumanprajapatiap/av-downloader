@@ -80,3 +80,20 @@ docker exec -it yt-dl python -m app.downloader "https://www.youtube.com/watch?v=
 
 
 docker exec -it yt-dl bash
+
+
+
+
+
+
+🌍 If you want anyone to access it globally
+
+Here are your options — from easiest to most production-ready:
+
+brew install ngrok
+ngrok http 5173
+
+
+Forwarding → https://fussily-subfractionary-irmgard.ngrok-free.dev -> http://localhost:5173
+
+ngrok http 8000
