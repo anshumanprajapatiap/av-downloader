@@ -1,99 +1,201 @@
-# Audio and Video Downloader Utility
+# 🎬 Audio & Video Downloader Utility
 
+A powerful utility for downloading **audio and video** from YouTube and playlists using **FastAPI**, **React (Vite)**, and **Docker**.  
+Supports both **server-side download** and **direct client download**.
 
+---
 
-# Docker compose run
-```sh
-  docker-compose up --build
+## 🚀 Quick Start (Docker Setup)
+
+### 🧱 1️⃣ Run with Docker Compose
+```bash
+docker-compose up --build
 ```
 
+This will:
 
+Start the FastAPI backend at http://localhost:8000
 
+Start the React frontend at http://localhost:5173
 
-# Running on System:
+yaml
+Copy code
 
-⚙️ 1️⃣ Create and activate virtual environment
-macOS / Linux:
-    ```
-        python3 -m venv venv
-        source venv/bin/activate
-    ```
+---
 
-Windows (PowerShell):
+## 🖥️ Run Locally (Without Docker)
+
+### ⚙️ 1️⃣ Create and Activate Virtual Environment
+
+<details>
+<summary>macOS / Linux</summary>
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+</details> <details> <summary>Windows (PowerShell)</summary>
+
+```bash
 python -m venv venv
 .\venv\Scripts\activate
+```
 
+</details>
+✅ Once active, your terminal will show (venv) prefix.
 
-You’ll see (venv) prefix in your terminal → means the virtual environment is active.
+⚙️ 2️⃣ Install Dependencies
 
-⚙️ 2️⃣ Install dependencies
+```bash
 pip install -r requirements.txt
+```
 
-⚙️ 3️⃣ Install ffmpeg (system dependency)
-macOS (Homebrew)
+⚙️ 3️⃣ Install ffmpeg (System Dependency)
+<details> <summary>macOS (Homebrew)</summary>
+
+```bash
 brew install ffmpeg
+```
 
-Ubuntu/Debian
+</details> <details> <summary>Ubuntu/Debian</summary>
+
+```bash
 sudo apt update && sudo apt install -y ffmpeg
+```
 
-Windows
+</details> <details> <summary>Windows</summary>
 
-Download ffmpeg from https://ffmpeg.org/download.html
+Download from ffmpeg.org/download.html
 
-Extract it and add its bin folder to your system PATH.
-(Example: C:\ffmpeg\bin)
+Extract and add its bin folder to your System PATH (e.g., C:\ffmpeg\bin)
 
-You can verify installation with:
+✅ Verify installation:
 
+```bash
 ffmpeg -version
+```
 
-⚙️ 4️⃣ Run FastAPI in development mode
+</details>
+⚙️ 4️⃣ Run FastAPI in Development Mode
+From the project root:
 
-From project root:
-
+```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
 
+Visit: http://localhost:8000
 
---reload auto-reloads the server when you edit code.
+--reload enables hot-reloading on code changes.
 
-Open http://localhost:8000
- in your browser.
+🐳 Docker Manual Commands
 
+🧱 1️⃣ Build Image
 
-# 1️⃣ Build image
+```bash
 docker build -t youtube-downloader .
+```
 
-# 2️⃣ Run container (mount downloads)
+▶️ 2️⃣ Run Container (Mount Downloads)
+
+```bash
 docker run -d \
   -p 8000:8000 \
   -v $(pwd)/downloads:/app/downloads \
   --name yt-dl youtube-downloader
-
+```
 
 Then open 👉 http://localhost:8000
 
-⚙️ CLI usage inside container
+⚙️ CLI Usage Inside Container
+Run downloader directly inside the running container:
 
-You can also use it directly via CLI:
-
+```bash
 docker exec -it yt-dl python -m app.downloader "https://www.youtube.com/watch?v=YOUR_ID"
+```
 
+Or open a shell:
 
+```bash
 docker exec -it yt-dl bash
+```
 
+🌍 Access from Anywhere (Global Access)
+You can make your local frontend/backend accessible on the internet using ngrok.
 
+🔗 Install ngrok
 
-
-
-
-🌍 If you want anyone to access it globally
-
-Here are your options — from easiest to most production-ready:
-
+```bash
 brew install ngrok
-ngrok http 5173
+```
+
+🌐 Expose Frontend
+
+```bash
+  ngrok http 5173
+```
 
 
-Forwarding → https://fussily-subfractionary-irmgard.ngrok-free.dev -> http://localhost:5173
+Example output:
 
+nginx
+
+<p>
+Forwarding → https://your-subdomain.ngrok-free.app -> http://localhost:5173
+</p>
+
+🌐 Expose Backend
+
+```bash
 ngrok http 8000
+```
+
+You’ll get a public HTTPS URL that can be accessed globally.
+
+📁 Project Structure
+```yaml
+├── app/
+│   ├── main.py              # FastAPI entrypoint
+│   ├── downloader.py        # Core logic for streaming/download
+│   └── utils/               # Helper functions
+├── frontend/
+│   ├── src/                 # React (Vite) app
+│   ├── Dockerfile
+│   └── ...
+├── docker-compose.yml
+├── requirements.txt
+└── README.md
+
+
+🧪 API Endpoints
+Method	Endpoint	Description
+POST	/download	Start video/audio download or stream
+GET	/status/{id}	Check progress/status
+GET	/download/{filename}	Download processed file
+
+
+💡 Features
+
+🎧 Download audio or video
+
+📂 Playlist batch processing
+
+⚡ Real-time progress via streaming
+
+🌐 Accessible locally or globally (via ngrok)
+
+🐳 Fully containerized setup (Docker + Docker Compose)
+
+🧰 Tech Stack
+Backend: FastAPI + yt-dlp + FFmpeg
+
+Frontend: React (Vite) + TailwindCSS
+
+Deployment: Docker, Docker Compose
+
+Streaming: FastAPI StreamingResponse
+
+```
+
+🏁 License
+MIT License © 2025 — Made with ❤️ by Anshuman Prajapati
+
