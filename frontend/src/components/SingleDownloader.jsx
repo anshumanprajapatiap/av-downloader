@@ -303,17 +303,7 @@ export default function SingleDownloader() {
                         railStyle={{ backgroundColor: "#e5e7eb", height: 6 }}
                       />
                     </div>
-
-                    {/* Progress visualization */}
-                    <div className="w-full mt-3 h-2 bg-gray-200 rounded-full relative">
-                      <div
-                        className="absolute top-0 h-2 bg-blue-500 rounded-full"
-                        style={{
-                          left: `${(range[0] / duration) * 100}%`,
-                          width: `${((range[1] - range[0]) / duration) * 100}%`,
-                        }}
-                      ></div>
-                    </div>
+                   
 
                     <p className="text-center text-sm mt-2 text-gray-700">
                       Selected Range: <b>{secondsToTime(range[0])}</b> →{" "}
