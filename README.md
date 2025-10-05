@@ -3,6 +3,25 @@
 A powerful utility for downloading **audio and video** from YouTube and playlists using **FastAPI**, **React (Vite)**, and **Docker**.  
 Supports both **server-side download** and **direct client download**.
 
+
+---
+
+## ⚠️ Legal Disclaimer
+
+This project is intended **solely for educational and personal use**.
+
+Downloading videos, audio, or any other content from YouTube **without explicit permission** may violate YouTube’s [Terms of Service](https://www.youtube.com/t/terms) and applicable copyright laws.
+
+By using this tool, you agree to:
+
+- ✅ Use it **only for content you own** or have been granted permission to download.  
+- 🚫 Not use it for any commercial purpose or public distribution.  
+- ⚖️ Assume full responsibility for how you use this software.
+
+The developer of this project ([@AnshumanPrajapati](https://github.com/anshumanprajapatiap)) **does not endorse or encourage** the unauthorized downloading or redistribution of copyrighted material.
+
+If you’re experimenting, please use the tool responsibly — it’s meant to demonstrate backend–frontend integration, streaming, and SSE event handling with FastAPI and React.
+
 ---
 ## 📸 Preview
 
