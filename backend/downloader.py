@@ -248,58 +248,62 @@ def preview_video(url: str):
 
 
 
+# def download_video(req: DownloadRequest):
+#     logger.info(f"🎬 Streaming directly | mode={req.mode} | url={req.url}")
+
+#     try:
+#         # Step 1️⃣ — Get streamable media URL
+#         stream_url, mime_type, title = stream_youtube_video(
+#             req.url,
+#             req.video_id or req.format_id
+#         )
+#         logger.info(f"🔗 Direct stream URL resolved | {stream_url[:80]}...")
+
+#         # Step 2️⃣ — Prepare stream headers (mimic browser)
+#         headers = {
+#             "User-Agent": (
+#                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+#                 "AppleWebKit/537.36 (KHTML, like Gecko) "
+#                 "Chrome/115.0.0.0 Safari/537.36"
+#             ),
+#             "Accept-Encoding": "identity;q=1, *;q=0",
+#             "Connection": "keep-alive",
+#             "Range": "bytes=0-",
+#         }
+
+#         # Step 3️⃣ — Stream content
+#         def iter_content():
+#             logger.info("📡 [STREAMING] Starting content transfer...")
+#             with requests.get(stream_url, headers=headers, stream=True, timeout=30) as r:
+#                 r.raise_for_status()
+#                 for chunk in r.iter_content(chunk_size=1024 * 1024):
+#                     if chunk:
+#                         yield chunk
+#             logger.info("✅ [STREAMING] Completed sending stream to client.")
+
+#         ext = "mp3" if req.mode == "audio" else "mp4"
+#         filename = f"{title}.{ext}"
+#         content_type = "audio/mpeg" if req.mode == "audio" else "video/mp4"
+
+#         return StreamingResponse(
+#             iter_content(),
+#             media_type=content_type,
+#             headers={
+#                 "Content-Disposition": f'attachment; filename="{filename}"'
+#             },
+#         )
+
+#     except Exception as e:
+#         logger.exception(f"❌ Streaming failed for {req.url}: {e}")
+#         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
 def download_video(req: DownloadRequest):
-    logger.info(f"🎬 Streaming directly | mode={req.mode} | url={req.url}")
-
-    try:
-        # Step 1️⃣ — Get streamable media URL
-        stream_url, mime_type, title = stream_youtube_video(
-            req.url,
-            req.video_id or req.format_id
-        )
-        logger.info(f"🔗 Direct stream URL resolved | {stream_url[:80]}...")
-
-        # Step 2️⃣ — Prepare stream headers (mimic browser)
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/115.0.0.0 Safari/537.36"
-            ),
-            "Accept-Encoding": "identity;q=1, *;q=0",
-            "Connection": "keep-alive",
-            "Range": "bytes=0-",
-        }
-
-        # Step 3️⃣ — Stream content
-        def iter_content():
-            logger.info("📡 [STREAMING] Starting content transfer...")
-            with requests.get(stream_url, headers=headers, stream=True, timeout=30) as r:
-                r.raise_for_status()
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        yield chunk
-            logger.info("✅ [STREAMING] Completed sending stream to client.")
-
-        ext = "mp3" if req.mode == "audio" else "mp4"
-        filename = f"{title}.{ext}"
-        content_type = "audio/mpeg" if req.mode == "audio" else "video/mp4"
-
-        return StreamingResponse(
-            iter_content(),
-            media_type=content_type,
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
-            },
-        )
-
-    except Exception as e:
-        logger.exception(f"❌ Streaming failed for {req.url}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return download_video_save_to_server_then_stream_to_client(req)
 
 
-
-'''
 def download_video_save_to_server_then_stream_to_client(req: DownloadRequest):
     logger.info(f"🎬 Downloading video | mode={req.mode} | url={req.url}")
 
@@ -421,7 +425,7 @@ def download_video_save_to_server_then_stream_to_client(req: DownloadRequest):
     finally:
         logger.info(f"🧹 Temp directory used: {tmp_dir}")
 
-'''
+
 
 def download_playlist(req: PlaylistDownloadRequest):
     """
