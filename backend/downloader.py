@@ -1,3 +1,11 @@
+# ---------- Add at top of file if not already imported ----------
+import time
+from typing import Optional, Tuple
+from requests.exceptions import HTTPError, RequestException
+# ---------------------------------------------------------------
+
+
+
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse
 import uuid
@@ -248,6 +256,197 @@ def preview_video(url: str):
 
 
 
+def _extract_playable_format_info(url: str, format_id: Optional[str] = None, cookies: Optional[str] = None, ydl_opts_extra: dict = None) -> dict:
+    """
+    Use yt_dlp to extract info and pick a playable format dict.
+    Returns a format dict (contains 'url', 'ext', 'format_id', etc).
+    Raises RuntimeError on failure.
+    """
+    opts = {
+        "quiet": True,
+        "skip_download": True,
+        "noplaylist": True,
+        # keep full metadata so we can pick formats
+        "forcejson": True,
+    }
+    if ydl_opts_extra:
+        opts.update(ydl_opts_extra)
+    if cookies:
+        opts["cookiefile"] = cookies
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    formats = info.get("formats", []) or []
+    if not formats:
+        raise RuntimeError("No formats found by yt-dlp")
+
+    # If a specific format_id requested, try to find exact match first
+    if format_id:
+        for f in formats:
+            if str(f.get("format_id")) == str(format_id) or str(f.get("itag")) == str(format_id):
+                if f.get("url"):
+                    return f
+        # fallback if requested not found - we continue to choose best available
+
+    # Prefer combined (video+audio) formats with direct 'url'
+    # Otherwise prefer highest resolution video-only with a direct url
+    # iterate formats in descending 'quality' order: yt-dlp usually orders by quality,
+    # so try reversed list to find a good candidate with url
+    for f in reversed(formats):
+        if f.get("url") and f.get("ext"):
+            # filter out formats where the url looks like a manifest (optional)
+            # but usually yt-dlp provides direct googlevideo links in 'url'
+            return f
+
+    # If nothing returned:
+    raise RuntimeError("Unable to select a playable format")
+
+
+def stream_youtube_video(url: str, format_id: str = None, cookies: Optional[str] = None, max_retries: int = 3, user_agent: Optional[str] = None, chunk_size: int = 1024*1024):
+    """
+    Streams a YouTube video by repeatedly extracting a fresh signed URL using yt-dlp,
+    then opening a streaming request to that URL. On 403 (or transient errors) it will
+    re-extract and retry up to `max_retries`.
+    Returns (StreamingResponse generator, mime_ext, sanitized_title) when called from download_video.
+    """
+    logger.info(f"🎬 [STREAM INIT] Request received | URL: {url} | format_id: {format_id}")
+
+    # common http headers
+    base_headers = {
+        "Accept-Encoding": "identity;q=1, *;q=0",  # avoid compressed responses for streaming
+        "Connection": "keep-alive",
+    }
+    if user_agent:
+        base_headers["User-Agent"] = user_agent
+    else:
+        base_headers["User-Agent"] = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/115.0.0.0 Safari/537.36"
+        )
+
+    # We'll try several times: re-extract a fresh URL each attempt
+    attempt = 0
+    last_exc = None
+
+    # We also extract some metadata once so we can name the file
+    try:
+        with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, "noplaylist": True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+        title = info.get("title", "video")
+    except Exception as e:
+        logger.exception(f"❌ [STREAM ERROR] metadata extraction failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to extract metadata: {e}")
+
+    sanitized_title = sanitize_filename(title)
+
+    def generator():
+        nonlocal attempt, last_exc
+        while attempt < max_retries:
+            attempt += 1
+            try:
+                fmt = _extract_playable_format_info(url, format_id=format_id, cookies=cookies)
+                stream_url = fmt.get("url")
+                ext = fmt.get("ext", "mp4")
+                logger.info(f"🔗 [PLAYBACK URL] attempt={attempt} | chosen format_id={fmt.get('format_id')} | ext={ext} | url_preview={ (stream_url[:120] + '...') if stream_url else 'NONE' }")
+
+                # Stream with requests
+                headers = base_headers.copy()
+
+                # Some formats provide http_headers inside format dict; merge them if present
+                fmt_http_headers = fmt.get("http_headers") or fmt.get("headers")
+                if isinstance(fmt_http_headers, dict):
+                    headers.update(fmt_http_headers)
+
+                # Use stream=True and iterate
+                with requests.get(stream_url, headers=headers, stream=True, timeout=20) as r:
+                    try:
+                        r.raise_for_status()
+                    except HTTPError as he:
+                        status = getattr(he.response, "status_code", None)
+                        logger.warning(f"[HTTP] status={status} on attempt {attempt} for stream_url")
+                        # if 403 -> try re-extract (maybe signature expired)
+                        if status == 403:
+                            last_exc = he
+                            # tiny backoff and retry
+                            time.sleep(0.5 * attempt)
+                            continue
+                        # other 4xx/5xx -> raise out (non-recoverable)
+                        raise
+
+                    for chunk in r.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            yield chunk
+
+                    # If we finished streaming without exception - done.
+                    logger.info("✅ [STREAM] completed successfully")
+                    return
+
+            except HTTPError as he:
+                last_exc = he
+                logger.warning(f"[STREAM] HTTPError on attempt {attempt}: {he}")
+                time.sleep(0.5 * attempt)
+                continue
+            except RequestException as rexc:
+                last_exc = rexc
+                logger.warning(f"[STREAM] RequestException on attempt {attempt}: {rexc}")
+                time.sleep(0.5 * attempt)
+                continue
+            except Exception as exc:
+                last_exc = exc
+                logger.exception(f"[STREAM] Unexpected error on attempt {attempt}: {exc}")
+                time.sleep(0.5 * attempt)
+                continue
+
+        logger.error("❌ [STREAM] exhausted retries, failing")
+        # Raise so FastAPI returns 500
+        raise RuntimeError("Failed to stream after retries") from last_exc
+
+    # we return the generator and metadata (mime ext, sanitized title)
+    # the caller uses generator() inside StreamingResponse
+    # Note: ext is taken from last extracted format only when generator runs successfully,
+    # so caller should assume mp4 unless generator provides otherwise.
+    return generator, sanitized_title
+
+
+def download_video(req: DownloadRequest):
+    """
+    streaming path (no save-to-disk). Uses stream_youtube_video generator and returns StreamingResponse.
+    """
+    logger.info(f"🎬 Streaming directly | mode={req.mode} | url={req.url}")
+
+    try:
+        # Prepare cookies path if provided in request object (optional)
+        cookies = getattr(req, "cookies", None)
+
+        # get generator factory and title (generator is created but will do extraction on first iteration)
+        generator_factory, title = stream_youtube_video(req.url, format_id=(req.video_id or req.format_id), cookies=cookies,
+                                                       max_retries=5,
+                                                       user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36")
+
+        # streaming generator instance
+        def iter_content():
+            yield from generator_factory()
+
+        ext = "mp3" if req.mode == "audio" else "mp4"
+        filename = f"{title}.{ext}"
+        content_type = "audio/mpeg" if req.mode == "audio" else "video/mp4"
+
+        logger.info(f"📡 [STREAM PREP] filename={filename} content_type={content_type}")
+
+        return StreamingResponse(
+            iter_content(),
+            media_type=content_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    except Exception as e:
+        logger.exception(f"❌ Streaming failed for {req.url}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 # def download_video(req: DownloadRequest):
 #     logger.info(f"🎬 Streaming directly | mode={req.mode} | url={req.url}")
 
@@ -300,8 +499,8 @@ def preview_video(url: str):
 
 
 
-def download_video(req: DownloadRequest):
-    return download_video_save_to_server_then_stream_to_client(req)
+# def download_video(req: DownloadRequest):
+#     return download_video_save_to_server_then_stream_to_client(req)
 
 
 def download_video_save_to_server_then_stream_to_client(req: DownloadRequest):
@@ -322,6 +521,15 @@ def download_video_save_to_server_then_stream_to_client(req: DownloadRequest):
                 "restrictfilenames": True,
                 "merge_output_format": "mp4",
                 "noplaylist": True,
+                "retries": 10,
+                "fragment_retries": 10,
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "DNT": "1",
+                },
             }
 
         elif req.mode == "audio":
@@ -338,6 +546,15 @@ def download_video_save_to_server_then_stream_to_client(req: DownloadRequest):
                 ],
                 "keepvideo": False,
                 "noplaylist": True,
+                "retries": 10,
+                "fragment_retries": 10,
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "DNT": "1",
+                },
             }
 
         elif req.mode == "merged":
@@ -350,6 +567,15 @@ def download_video_save_to_server_then_stream_to_client(req: DownloadRequest):
                 "restrictfilenames": True,
                 "merge_output_format": "mp4",
                 "noplaylist": True,
+                "retries": 10,  # Retry up to 10 times
+                "fragment_retries": 10,  # Retry fragments up to 10 times
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "DNT": "1",
+                },
             }
 
         else:
