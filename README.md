@@ -49,7 +49,7 @@ If you’re experimenting, please use the tool responsibly — it’s meant to d
 
 ### 🧱 1️⃣ Run with Docker Compose
 ```bash
-docker-compose up --build
+docker compose up --build
 ````
 
 This will:
@@ -197,13 +197,27 @@ brew install ngrok
 ### 🌐 Expose Frontend
 
 ```bash
+docker compose -f docker-compose-prod.yml up --build -d
 ngrok http 5173
 ```
+
+```bash
+docker compose -f docker-compose-prod.yml down
+pkill -f ngrok
+```
+
+
 
 Example output:
 
 ```
 Forwarding → https://your-subdomain.ngrok-free.app -> http://localhost:5173
+
+
+docker compose -f docker-compose-local.yml up --build -d
+ngrok http 8000 --config ~/.ngrok/backend.yml --log=stdout 
+ngrok http 5173 --host-header="localhost:5173" --config ~/.ngrok/frontend.yml --log=stdout
+
 ```
 
 ### 🌐 Expose Backend

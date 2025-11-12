@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from "react";
 import axios from "axios";
 
-const BACKEND_URL = "http://localhost:8000";
+// const BACKEND_URL = "http://localhost:8000";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
 
 export default function PlaylistDownloader() {
   const [url, setUrl] = useState("");
@@ -22,6 +23,11 @@ export default function PlaylistDownloader() {
     try {
       const res = await axios.get(`${BACKEND_URL}/preview`, {
         params: { url, type: "playlist" },
+        headers: { 
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': '1'
+        }
       });
       const videos = res.data.videos || [];
       setPlaylist(videos);
@@ -57,7 +63,11 @@ export default function PlaylistDownloader() {
     try {
       const response = await fetch(`${BACKEND_URL}/downloadplaylist`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': '1'
+        },
         body: JSON.stringify({
           url,
           download_path: downloadPath,

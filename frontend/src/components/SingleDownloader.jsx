@@ -5,7 +5,7 @@ import axios from "axios";
 import Slider from "rc-slider";
 import "rc-slider/assets/index.css";
 
-const BACKEND_URL = "http://localhost:8000";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
 
 export default function SingleDownloader() {
   const [url, setUrl] = useState("");
@@ -37,7 +37,14 @@ export default function SingleDownloader() {
     setLoading(true);
     setPreview(null);
     try {
-      const res = await axios.get(`${BACKEND_URL}/preview`, { params: { url, type: fetchType } });
+      const res = await axios.get(`${BACKEND_URL}/preview`, { 
+        params: { url, type: fetchType } ,
+        headers: { 
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': '1'
+        }
+      });
       setPreview(res.data);
       if (res.data.duration) {
         setDuration(res.data.duration);
@@ -94,9 +101,13 @@ export default function SingleDownloader() {
           end_time: secondsToTime(endTime),
         },
         {
-          responseType: "blob",
-          onDownloadProgress: (e) =>
-            e.total && setProgress(Math.round((e.loaded * 100) / e.total)),
+        headers: { 
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': '1'
+        },
+        responseType: "blob",
+        onDownloadProgress: (e) => e.total && setProgress(Math.round((e.loaded * 100) / e.total)),
         }
       );
 
